@@ -8,13 +8,15 @@
 #include <string>
 #include <mutex>
 
+
 enum RequestType : char 
 {
     CONNECT,
     PLAYER_JOIN,
     PLAYER_LEFT,
     PLAYER_MOVE,
-    PLAYER_ATTACK
+    PLAYER_ATTACK,
+    PLAYER_COUNT
 };
 
 enum Direction : char 
@@ -53,7 +55,7 @@ struct Player
     int64_t point;
     bool isActive;
 
-    static constexpr int getSerializeSize() noexcept 
+    static consteval int getSerializeSize() noexcept 
     {
         return sizeof(id) + sizeof(ip) + sizeof(port) + sizeof(name) + sizeof(pos)
             + sizeof(direction) + sizeof(scale) + sizeof(traverseAngle) + sizeof(point) + sizeof(isActive);
@@ -112,15 +114,15 @@ private:
         }
     }
 
-    void handleRequest(const char* data, sf::IpAddress& sender, unsigned short senderPort) 
+    void handleRequest(const char* data, sf::IpAddress& sender, const unsigned short senderPort) 
     {
-        switch (data[0]) 
+        switch (static_cast<RequestType>(data[0])) 
         {
             case CONNECT:
                 handleConnect(sender, senderPort);
                 break;
             case PLAYER_JOIN:
-                handlePlayerJoin(data + 1, sender);
+                handlePlayerJoin(data + 1, sender, senderPort);
                 break;
             case PLAYER_LEFT:
                 handlePlayerLeft();
@@ -137,11 +139,11 @@ private:
         }
     }
 
-    void handleConnect(sf::IpAddress& sender, unsigned short senderPort) 
+    void handleConnect(const sf::IpAddress& sender, const unsigned short senderPort) 
     {
     }
 
-    void handlePlayerJoin(const char* name, sf::IpAddress& sender) 
+    void handlePlayerJoin(const char* name, const sf::IpAddress& sender,const unsigned short senderPort)
     {
         bool isEmptySlot = false;
         int64_t newPlayerId = -1;
@@ -152,8 +154,9 @@ private:
             {
                 newPlayerId = player->id;
                 player->isActive = true;
-                std::strncpy(player->ip, sender.toString().c_str(), sizeof(player->ip) - 1);
-                std::strncpy(player->name, name, sizeof(player->name) - 1);
+                
+                strncpy_s(player->ip, sender.toString().c_str(), sizeof(player->ip) - 1);
+                strncpy_s(player->name, name, sizeof(player->name) - 1);
                 isEmptySlot = true;
                 break;
             }
@@ -165,34 +168,65 @@ private:
             auto newPlayer = std::make_unique<Player>();
             newPlayer->id = newPlayerId;
             newPlayer->isActive = true;
-            std::strncpy(newPlayer->ip, sender.toString().c_str(), sizeof(newPlayer->ip) - 1);
-            std::strncpy(newPlayer->name, name, sizeof(newPlayer->name) - 1);
+            strncpy_s(newPlayer->ip, sender.toString().c_str(), sizeof(newPlayer->ip) - 1);
+            strncpy_s(newPlayer->name, name, sizeof(newPlayer->name) - 1);
             playerContainer.push_back(std::move(newPlayer));
         }
-
+        sendToNewPLayer(sender, senderPort, newPlayerId);
         broadcastPlayerJoin(newPlayerId);
+    }
+
+    void sendToNewPLayer(const sf::IpAddress& sender,const unsigned short senderPort, const int64_t newPlayerId)
+    {
+        char responseBuffer[1024]{};
+        std::size_t offset{ 1 };
+        for (const auto& player : playerContainer)
+        {
+            if (player->isActive)
+            {
+                player->serialize(responseBuffer + offset);
+                offset += Player::getSerializeSize();
+            }
+        }
+        size_t playerNum = playerContainer.size();
+        char* playerNumPacketData = new char[sizeof(playerNum) + 1];
+
+        memcpy_s(playerNumPacketData, sizeof(playerNum) + 1, (void*)PLAYER_COUNT, 1);
+        memcpy_s(playerNumPacketData + 1, sizeof(playerNum) + 1, (void*)playerNum, sizeof(playerNum));
+
+        if (socket.send(playerNumPacketData, sizeof(playerNum) + 1, sender, senderPort)  != sf::Socket::Done)
+        {
+            std::cerr << "Cant send player num to new player!!\n";
+            return;
+        }
+
+        if (socket.send(responseBuffer, offset, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
+        {
+            std::cerr << "Cant send player container to new player!!\n";
+            return;
+        }
+        delete[] playerNumPacketData;
     }
 
     void broadcastPlayerJoin(int64_t newPlayerId) 
     {
-        char responseBuffer[1024]{};
         char broadcastMessage[Player::getSerializeSize() + 1]{};
         broadcastMessage[0] = PLAYER_JOIN;
 
         playerContainer[newPlayerId]->serialize(broadcastMessage + 1);
 
-        std::size_t offset = 1;
         for (const auto& player : playerContainer) 
         {
             if (player->isActive && player->id != newPlayerId) 
             {
-                player->serialize(responseBuffer + offset);
-                offset += Player::getSerializeSize();
-                socket.send(broadcastMessage, sizeof(broadcastMessage), sf::IpAddress(player->ip), player->port);
+                if (socket.send(broadcastMessage, sizeof(broadcastMessage), sf::IpAddress(player->ip), player->port) != sf::Socket::Done)
+                {
+                    std::cerr << "Cant send broadcast data to ip: " << player->ip << "\n";
+                }
             }
         }
 
-        socket.send(responseBuffer, offset, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port);
+        
     }
 
     void handlePlayerLeft() 
