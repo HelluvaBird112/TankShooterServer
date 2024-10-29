@@ -44,32 +44,91 @@ struct Position
 
 struct Player 
 {
-    int64_t id;
-    char ip[15];
-    unsigned short port;
-    char name[32];
-    Position pos;
-    Direction direction;
-    float scale;
-    float traverseAngle;
-    int64_t point;
-    bool isActive;
-
+    int64_t id{0};
+    char ip[15]{0};
+    unsigned short port{};
+    char name[32]{};
+    Position pos{};
+    Direction direction{};
+    float scale{};
+    float traverseAngle{};
+    int64_t point{};
+    bool isActive{false};
+    Player() = default;
+    Player(int64_t id) : id {id}
+    {}
     static consteval int getSerializeSize() noexcept 
     {
         return sizeof(id) + sizeof(ip) + sizeof(port) + sizeof(name) + sizeof(pos)
             + sizeof(direction) + sizeof(scale) + sizeof(traverseAngle) + sizeof(point) + sizeof(isActive);
     }
 
-    void serialize(char* buffer) const noexcept 
+    void serialize(char* buffer) const noexcept
     {
         std::size_t offset = 0;
-        std::memcpy(buffer + offset, this, getSerializeSize());
+
+        std::memcpy(buffer + offset, &id, sizeof(id));
+        offset += sizeof(id);
+
+        std::memcpy(buffer + offset, ip, sizeof(ip));
+        offset += sizeof(ip);
+
+        std::memcpy(buffer + offset, &port, sizeof(port));
+        offset += sizeof(port);
+
+        std::memcpy(buffer + offset, name, sizeof(name));
+        offset += sizeof(name);
+
+        std::memcpy(buffer + offset, &pos, sizeof(pos));
+        offset += sizeof(pos);
+
+        std::memcpy(buffer + offset, &direction, sizeof(direction));
+        offset += sizeof(direction);
+
+        std::memcpy(buffer + offset, &scale, sizeof(scale));
+        offset += sizeof(scale);
+
+        std::memcpy(buffer + offset, &traverseAngle, sizeof(traverseAngle));
+        offset += sizeof(traverseAngle);
+
+        std::memcpy(buffer + offset, &point, sizeof(point));
+        offset += sizeof(point);
+
+        std::memcpy(buffer + offset, &isActive, sizeof(isActive));
     }
 
-    void deserialize(const char* buffer) noexcept 
+    void deserialize(const char* buffer) noexcept
     {
-        std::memcpy(this, buffer, getSerializeSize());
+        std::size_t offset = 0;
+
+        std::memcpy(&id, buffer + offset, sizeof(id));
+        offset += sizeof(id);
+
+        std::memcpy(ip, buffer + offset, sizeof(ip));
+        offset += sizeof(ip);
+
+        std::memcpy(&port, buffer + offset, sizeof(port));
+        offset += sizeof(port);
+
+        std::memcpy(name, buffer + offset, sizeof(name));
+        offset += sizeof(name);
+
+        std::memcpy(&pos, buffer + offset, sizeof(pos));
+        offset += sizeof(pos);
+
+        std::memcpy(&direction, buffer + offset, sizeof(direction));
+        offset += sizeof(direction);
+
+        std::memcpy(&scale, buffer + offset, sizeof(scale));
+        offset += sizeof(scale);
+
+        std::memcpy(&traverseAngle, buffer + offset, sizeof(traverseAngle));
+        offset += sizeof(traverseAngle);
+
+        std::memcpy(&point, buffer + offset, sizeof(point));
+        offset += sizeof(point);
+
+        std::memcpy(&isActive, buffer + offset, sizeof(isActive));
     }
 };
 
@@ -78,6 +137,9 @@ class GameServer
 public:
     GameServer(unsigned short port) : uid(1) 
     {
+        for (int64_t i = 0; i < 100; ++i) {
+            playerContainer.push_back(std::make_unique<Player>(i));
+        }
         if (socket.bind(port) != sf::Socket::Done) 
         {
             throw std::runtime_error("Error binding socket!");
@@ -95,8 +157,8 @@ public:
 
 private:
     sf::UdpSocket socket;
-    std::atomic_int uid;
-    std::vector<std::unique_ptr<Player>> playerContainer{ 1000 };
+    std::atomic_int uid{101};
+    std::vector<std::unique_ptr<Player>> playerContainer{};
     std::mutex mt;
 
     void receiveData() 
@@ -134,7 +196,7 @@ private:
                 handlePlayerAttack();
                 break;
             default:
-                std::cout << "Unknown request type: " << data[0] << std::endl;
+                std::cout << "Unknown request type: " << data << std::endl;
                 break;
         }
     }
@@ -147,15 +209,19 @@ private:
     {
         bool isEmptySlot = false;
         int64_t newPlayerId = -1;
-
+        std::cout << "NewplayerID: " <<newPlayerId << "\n";
         for (auto& player : playerContainer) 
         {
             if (!player->isActive) 
             {
+
                 newPlayerId = player->id;
                 player->isActive = true;
                 
-                strncpy_s(player->ip, sender.toString().c_str(), sizeof(player->ip) - 1);
+                strncpy_s(player->ip, sender.toString().c_str(), sizeof(player->ip));
+                std::cout << "PLayerIp: " << player->ip << "\n";
+
+                player->port = senderPort;
                 strncpy_s(player->name, name, sizeof(player->name) - 1);
                 isEmptySlot = true;
                 break;
@@ -164,47 +230,80 @@ private:
 
         if (newPlayerId == -1) 
         {
-            newPlayerId = uid++;
+            newPlayerId = uid.load();
+            uid++;
             auto newPlayer = std::make_unique<Player>();
             newPlayer->id = newPlayerId;
             newPlayer->isActive = true;
-            strncpy_s(newPlayer->ip, sender.toString().c_str(), sizeof(newPlayer->ip) - 1);
+            strncpy_s(newPlayer->ip, sender.toString().c_str(), sizeof(newPlayer->ip));
+            newPlayer->port = senderPort;
             strncpy_s(newPlayer->name, name, sizeof(newPlayer->name) - 1);
             playerContainer.push_back(std::move(newPlayer));
         }
+        std::cout << sender << " " << senderPort << " NewPlayerId: " << newPlayerId << "\n";
         sendToNewPLayer(sender, senderPort, newPlayerId);
         broadcastPlayerJoin(newPlayerId);
     }
 
-    void sendToNewPLayer(const sf::IpAddress& sender,const unsigned short senderPort, const int64_t newPlayerId)
+    void sendToNewPLayer(const sf::IpAddress& sender, const unsigned short senderPort, const int64_t newPlayerId)
     {
-        char responseBuffer[1024]{};
         std::size_t offset{ 1 };
+
+        if (newPlayerId < 0 || newPlayerId >= playerContainer.size() || !playerContainer[newPlayerId]->isActive)
+        {
+            std::cerr << "Error: Invalid newPlayerId: " << newPlayerId << std::endl;
+            return;
+        }
+        auto activePlayerNum = [&]() 
+            {
+                size_t activePlayerCnt = 0;
+                for (const auto& player : playerContainer)
+                {
+                    if (player->isActive)
+                    {
+                        activePlayerCnt++;
+                    }
+                }
+                return activePlayerCnt;
+            };
+        std::vector<char> responseBuffer(activePlayerNum() * sizeof(Player));
+
         for (const auto& player : playerContainer)
         {
             if (player->isActive)
             {
-                player->serialize(responseBuffer + offset);
+                player->serialize(responseBuffer.data() + offset);
                 offset += Player::getSerializeSize();
             }
         }
-        size_t playerNum = playerContainer.size();
-        char* playerNumPacketData = new char[sizeof(playerNum) + 1];
 
-        memcpy_s(playerNumPacketData, sizeof(playerNum) + 1, (void*)PLAYER_COUNT, 1);
-        memcpy_s(playerNumPacketData + 1, sizeof(playerNum) + 1, (void*)playerNum, sizeof(playerNum));
+        char* playerNumPacketData = new char[sizeof(activePlayerNum) + 1];
+        char playerCntCmd = static_cast<char>(PLAYER_COUNT);
+        memcpy_s(playerNumPacketData, sizeof(playerCntCmd), (void*)&playerCntCmd, sizeof(playerCntCmd)); 
+        memcpy_s(playerNumPacketData + sizeof(playerCntCmd), sizeof(activePlayerNum), (void*)&activePlayerNum, sizeof(activePlayerNum));
 
-        if (socket.send(playerNumPacketData, sizeof(playerNum) + 1, sender, senderPort)  != sf::Socket::Done)
+        for (size_t i = 0; i < sizeof(activePlayerNum) + 1; ++i) {
+            std::cout << "Byte " << i << ": " << static_cast<int>(playerNumPacketData[i]) << "\n";
+        }
+        if (socket.send(playerNumPacketData, sizeof(activePlayerNum) + 1, sender, senderPort) != sf::Socket::Done)
         {
-            std::cerr << "Cant send player num to new player!!\n";
+            std::cerr << "Cannot send player number to new player!" << std::endl;
+            delete[] playerNumPacketData;
             return;
         }
 
-        if (socket.send(responseBuffer, offset, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
-        {
-            std::cerr << "Cant send player container to new player!!\n";
-            return;
+        try {
+            if (socket.send(responseBuffer.data(), offset, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
+            {
+                std::cerr << "Cannot send player container to new player!" << std::endl;
+                delete[] playerNumPacketData;
+                return;
+            }
         }
+        catch (const std::exception& e) {
+            std::cerr << "Exception occurred while sending data: " << e.what() << std::endl;
+        }
+
         delete[] playerNumPacketData;
     }
 
