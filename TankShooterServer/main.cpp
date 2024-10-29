@@ -209,7 +209,6 @@ private:
     {
         bool isEmptySlot = false;
         int64_t newPlayerId = -1;
-        std::cout << "NewplayerID: " <<newPlayerId << "\n";
         for (auto& player : playerContainer) 
         {
             if (!player->isActive) 
@@ -217,12 +216,13 @@ private:
 
                 newPlayerId = player->id;
                 player->isActive = true;
-                
+                strncpy_s(player->name, name, sizeof(player->name));
+                std::cout << "Player name: " << player->name << "\n";
                 strncpy_s(player->ip, sender.toString().c_str(), sizeof(player->ip));
                 std::cout << "PLayerIp: " << player->ip << "\n";
 
                 player->port = senderPort;
-                strncpy_s(player->name, name, sizeof(player->name) - 1);
+                strncpy_s(player->name, name, sizeof(player->name));
                 isEmptySlot = true;
                 break;
             }
@@ -233,6 +233,8 @@ private:
             newPlayerId = uid.load();
             uid++;
             auto newPlayer = std::make_unique<Player>();
+            strncpy_s(newPlayer->name, name, sizeof(newPlayer->name));
+
             newPlayer->id = newPlayerId;
             newPlayer->isActive = true;
             strncpy_s(newPlayer->ip, sender.toString().c_str(), sizeof(newPlayer->ip));
@@ -240,40 +242,38 @@ private:
             strncpy_s(newPlayer->name, name, sizeof(newPlayer->name) - 1);
             playerContainer.push_back(std::move(newPlayer));
         }
-        std::cout << sender << " " << senderPort << " NewPlayerId: " << newPlayerId << "\n";
+        std::cout << sender << " " << senderPort << " NewPlayerId: " << newPlayerId << " PlayerName: " << name <<"\n";
         sendToNewPLayer(sender, senderPort, newPlayerId);
         broadcastPlayerJoin(newPlayerId);
     }
 
     void sendToNewPLayer(const sf::IpAddress& sender, const unsigned short senderPort, const int64_t newPlayerId)
     {
-        std::size_t offset{ 1 };
+        std::size_t offset{ 0 };
 
         if (newPlayerId < 0 || newPlayerId >= playerContainer.size() || !playerContainer[newPlayerId]->isActive)
         {
             std::cerr << "Error: Invalid newPlayerId: " << newPlayerId << std::endl;
             return;
         }
-        auto activePlayerNum = [&]() 
-            {
-                size_t activePlayerCnt = 0;
-                for (const auto& player : playerContainer)
+           
+        size_t activePlayerNum = 0;
+        for (const auto& player : playerContainer)
                 {
                     if (player->isActive)
                     {
-                        activePlayerCnt++;
+                        activePlayerNum++;
                     }
                 }
-                return activePlayerCnt;
-            };
-        std::vector<char> responseBuffer(activePlayerNum() * sizeof(Player));
+         
+        std::vector<char> responseBuffer(activePlayerNum * sizeof(Player));
 
         for (const auto& player : playerContainer)
         {
             if (player->isActive)
             {
-                player->serialize(responseBuffer.data() + offset);
-                offset += Player::getSerializeSize();
+                memcpy_s(responseBuffer.data() + offset, sizeof(Player), (void*)&player, sizeof(player));
+                offset += sizeof(Player);
             }
         }
 
@@ -281,10 +281,7 @@ private:
         char playerCntCmd = static_cast<char>(PLAYER_COUNT);
         memcpy_s(playerNumPacketData, sizeof(playerCntCmd), (void*)&playerCntCmd, sizeof(playerCntCmd)); 
         memcpy_s(playerNumPacketData + sizeof(playerCntCmd), sizeof(activePlayerNum), (void*)&activePlayerNum, sizeof(activePlayerNum));
-
-        for (size_t i = 0; i < sizeof(activePlayerNum) + 1; ++i) {
-            std::cout << "Byte " << i << ": " << static_cast<int>(playerNumPacketData[i]) << "\n";
-        }
+        
         if (socket.send(playerNumPacketData, sizeof(activePlayerNum) + 1, sender, senderPort) != sf::Socket::Done)
         {
             std::cerr << "Cannot send player number to new player!" << std::endl;
@@ -293,7 +290,7 @@ private:
         }
 
         try {
-            if (socket.send(responseBuffer.data(), offset, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
+            if (socket.send(responseBuffer.data(), activePlayerNum * sizeof(Player), sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
             {
                 std::cerr << "Cannot send player container to new player!" << std::endl;
                 delete[] playerNumPacketData;
