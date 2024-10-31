@@ -9,9 +9,13 @@
 #include <cstring>
 #include <string>
 #include <mutex>
+#include <algorithm>
+
+constexpr sf::Uint32 screenWidth = 840;
+constexpr sf::Uint32 screenHeight = 640;
 
 
-enum  RequestType : char 
+enum  RequestType : sf::Uint8 
 {
     CONNECT,
     PLAYER_JOIN,
@@ -21,7 +25,7 @@ enum  RequestType : char
     PLAYER_COUNT
 };
 
-enum  Direction : char 
+enum  Direction : sf::Uint8
 {
     NORTH,
     NORTHEAST,
@@ -35,13 +39,8 @@ enum  Direction : char
 
 struct Position 
 {
-    int32_t x = 0;
-    int32_t y = 0;
-
-    void serialize(char* buffer) const 
-    {
-        std::memcpy(buffer, this, sizeof(Position));
-    }
+    sf::Int32 x = 0;
+    sf::Int32 y = 0;
 };
 
 struct Player 
@@ -75,7 +74,9 @@ class GameServer
 public:
     GameServer(unsigned short port) : uid(1) 
     {
-        for (int64_t i = 0; i < 100; ++i) {
+        //socket.setBlocking(false);
+        for (int64_t i = 0; i < 100; ++i) 
+        {
             playerContainer.push_back(std::make_unique<Player>(i));
         }
         if (socket.bind(port) != sf::Socket::Done) 
@@ -97,7 +98,6 @@ private:
     sf::UdpSocket socket;
     std::atomic_int uid{101};
     std::vector<std::unique_ptr<Player>> playerContainer{};
-    std::mutex mt;
 
     void receiveData() 
     {
@@ -108,16 +108,25 @@ private:
         std::size_t received = 0;
         if (socket.receive(data, sender, senderPort) == sf::Socket::Done) 
         {
-            std::lock_guard<std::mutex> lock{ mt };
-            std::cout << "Received " << received << " bytes from " << sender << ":" << senderPort << std::endl;
-            handleRequest(data, sender, senderPort);
+            std::cout << "Received " << data.getDataSize() << " bytes from " << sender << ":" << senderPort << std::endl;
+            sf::Uint64 playerId{ 0 };
+            for (const auto& player: playerContainer )
+            {
+                if (player->ip.compare(sender.toString()) && player->port == senderPort)
+                {
+                    playerId = player->id;
+                    break;
+                }
+            }
+            handleRequest(data,  playerId, sender, senderPort);
         }
     }
 
-    void handleRequest(sf::Packet& data, sf::IpAddress& sender, const unsigned short senderPort) 
+    void handleRequest(sf::Packet& data, sf::Uint64 playerId, sf::IpAddress& sender, const unsigned short senderPort) 
     {
-        sf::Int8 reqType{};
+        sf::Uint8 reqType{};
         data >> reqType;
+        std::cout << static_cast<RequestType>(reqType) << "\n";
         switch (static_cast<RequestType>(reqType)) 
         {
             case CONNECT:
@@ -130,7 +139,7 @@ private:
                 handlePlayerLeft();
                 break;
             case PLAYER_MOVE:
-                handlePlayerMove();
+                handlePlayerMove(data, playerId);
                 break;
             case PLAYER_ATTACK:
                 handlePlayerAttack();
@@ -184,14 +193,14 @@ private:
         broadcastPlayerJoin(newPlayerId);
     }
 
-    void sendToNewPLayer(const sf::IpAddress& sender, const unsigned short senderPort, const int64_t newPlayerId)
+    void sendToNewPLayer(const sf::IpAddress& sender, const unsigned short senderPort, const sf::Uint64 newPlayerId)
     {
         if (newPlayerId < 0 || newPlayerId >= playerContainer.size() || !playerContainer[newPlayerId]->isActive)
         {
             std::cerr << "Error: Invalid newPlayerId: " << newPlayerId << std::endl;
             return;
         }
-        size_t activePlayerNum = 0;
+        sf::Uint64 activePlayerNum = 0;
         for (const auto& player : playerContainer)
         {
             if (player->isActive)
@@ -200,25 +209,29 @@ private:
             }
         }
 
-        sf::Packet playerCountPacket;
-        playerCountPacket << static_cast<char>(PLAYER_COUNT) << static_cast<sf::Int64>(activePlayerNum);
-
-        if (socket.send(playerCountPacket, sender, senderPort) != sf::Socket::Done)
+        /*sf::Packet playerCountAndIdPacket{};
+        RequestType reqType{ PLAYER_COUNT };
+        playerCountAndIdPacket << reqType << activePlayerNum << newPlayerId;
+        std::cout << "Active: " << activePlayerNum << " NewPlayerId: " << newPlayerId << "\n";
+        std::cout << "sizeof send packet: " << playerCountAndIdPacket.getDataSize();
+        if (socket.send(playerCountAndIdPacket, sender, senderPort) != sf::Socket::Done)
         {
             std::cerr << "Cannot send player number to new player!" << std::endl;
             return;
-        }
+        }*/
 
-        sf::Packet playersPacket;
+        sf::Packet playersPacket{};
+        std::cout << "Data send:\n";
         for (const auto& player : playerContainer)
         {
-            if (player->isActive)
-            {
+            /*if (player->isActive)
+            {*/
                 playersPacket << *player; 
-            }
+                //std::cout << (*player).id << " " << (*player).name << "\n";
+            /*}*/
         }
-
-        if (socket.send(playersPacket, sf::IpAddress(playerContainer[newPlayerId]->ip), playerContainer[newPlayerId]->port) != sf::Socket::Done)
+        std::cout << "Size of player vector packet :" << playersPacket.getDataSize() << " bytes\n";
+        if (socket.send(playersPacket, sender, senderPort) != sf::Socket::Done)
         {
             std::cerr << "Cannot send player container to new player!" << std::endl;
             return;
@@ -235,6 +248,7 @@ private:
         {
             if (player->isActive && player->id != newPlayerId)
             {
+                std::cout << "Broadcast :" << player->id << "\n";
                 if (socket.send(broadcastPacket, sf::IpAddress(player->ip), player->port) != sf::Socket::Done)
                 {
                     std::cerr << "Cant send broadcast data to ip: " << player->ip << "\n";
@@ -247,8 +261,64 @@ private:
     {
     }
 
-    void handlePlayerMove() 
+    void handlePlayerMove(sf::Packet& data, sf::Uint64 playerId) 
     {
+        Direction direction{};
+        RequestType cmdType{ PLAYER_MOVE };
+        data >> direction;
+        sf::Packet packet{};
+        Position& playerPos = playerContainer[playerId]->pos;
+        switch (direction)
+        {
+        case NORTH:
+            playerPos.y--;
+            break;
+        case NORTHEAST:
+            playerPos.x--;
+            playerPos.y--;
+            break;
+        case EAST:
+            playerPos.x--;
+            break;
+        case SOUTHEAST:
+            playerPos.x--;
+            playerPos.y++;
+            break;
+        case SOUTH:
+            playerPos.y++;
+            break;
+        case SOUTHWEST:
+            playerPos.x++;
+            playerPos.y++;
+            break;
+        case WEST:
+            playerPos.x++;
+            break;
+        case NORTHWEST:
+            playerPos.x++;
+            playerPos.y--;
+            break;
+        default:
+            break;
+        }
+        playerPos.x = std::clamp(playerPos.x, 0, sf::Int32(screenWidth));
+        playerPos.y = std::clamp(playerPos.y, 0, sf::Int32(screenHeight));
+
+
+        packet << cmdType << playerId << playerPos.x << playerPos.y;
+
+        for (const auto& player : playerContainer)
+        {
+            if (player->isActive)
+            {
+                std::cout << "send to ip: " << player->ip << " port:" << player->port <<"\n";
+                if (socket.send(packet, sf::IpAddress(player->ip), player->port) != sf::Socket::Done)
+                {
+                    std::cerr << "Cant send Move Packet to Client has Ip: " << player->ip << " and Port: " << player->port << "\n";
+                }
+            }
+        }
+
     }
 
     void handlePlayerAttack() 
